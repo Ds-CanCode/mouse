@@ -8,7 +8,7 @@ use sdl2::keyboard::{Keycode, Mod};
 use sdl2::mouse::Cursor;
 
 const MAX_RUNTIME: Duration = Duration::from_secs(180 * 60);
-const MOVE_INTERVAL: Duration = Duration::from_secs(15);
+const MOVE_INTERVAL: Duration = Duration::from_secs(2);
 const STEP: i32 = 5;
 
 // Create a custom 16x16 black arrow cursor.
@@ -129,6 +129,18 @@ fn main() {
         (100, 100),
         (200, 200),
         (300, 300),
+        (400, 400),
+        (500, 500),
+        (600, 600),
+        (700, 700),
+        (800, 800),
+        (900, 900),
+        (1000, 1000),
+        (1100, 1100),
+        (1200, 1200),
+        (1300, 1300),
+        (1400, 1400),
+        (1500, 1500),
     ];
 
     let mut i = 0;
@@ -208,5 +220,5 @@ fn main() {
     drop(sdl_context);
 
     // Logout after normal application exit.
-    //logout();
+    logout();
 }
