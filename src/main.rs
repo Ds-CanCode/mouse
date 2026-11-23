@@ -1,5 +1,4 @@
-
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -13,6 +12,51 @@ const MAX_RUNTIME: Duration = Duration::from_secs(120 * 60);
 const MOVE_INTERVAL: Duration = Duration::from_secs(2);
 const SCROLL_INTERVAL: Duration = Duration::from_millis(500);
 const STEP: i32 = 5;
+
+// Read a gsettings value (last whitespace token, e.g. "uint32 300" -> "300").
+fn gsettings_get(schema: &str, key: &str) -> String {
+    let out = Command::new("gsettings")
+        .args(["get", schema, key])
+        .stderr(Stdio::null())
+        .output();
+
+    match out {
+        Ok(o) => String::from_utf8_lossy(&o.stdout)
+            .split_whitespace()
+            .last()
+            .unwrap_or("")
+            .to_string(),
+        Err(_) => String::new(),
+    }
+}
+
+fn gsettings_set(schema: &str, key: &str, value: &str) {
+    let _ = Command::new("gsettings")
+        .args(["set", schema, key, value])
+        .status();
+}
+
+// Disable GNOME idle + lock; returns (prev_idle_delay, prev_lock_enabled).
+fn disable_lock() -> (String, String) {
+    let prev_idle =
+        gsettings_get("org.gnome.desktop.session", "idle-delay");
+    let prev_lock =
+        gsettings_get("org.gnome.desktop.screensaver", "lock-enabled");
+
+    gsettings_set("org.gnome.desktop.session", "idle-delay", "0");
+    gsettings_set("org.gnome.desktop.screensaver", "lock-enabled", "false");
+
+    (prev_idle, prev_lock)
+}
+
+// Restore the previous idle + lock settings.
+fn restore_lock(prev: &(String, String)) {
+    let idle = if prev.0.is_empty() { "300" } else { &prev.0 };
+    let lock = if prev.1.is_empty() { "true" } else { &prev.1 };
+
+    gsettings_set("org.gnome.desktop.session", "idle-delay", idle);
+    gsettings_set("org.gnome.desktop.screensaver", "lock-enabled", lock);
+}
 
 // Create a custom 16x16 black arrow cursor.
 fn create_black_cursor() -> Cursor {
@@ -46,17 +90,8 @@ fn create_black_cursor() -> Cursor {
         }
     }
 
-    // Same bitmap for data and mask:
-    // opaque black pixels, transparent background.
-    Cursor::new(
-        &bitmap,
-        &bitmap,
-        16,
-        16,
-        0,
-        0,
-    )
-    .expect("Cannot create black cursor")
+    Cursor::new(&bitmap, &bitmap, 16, 16, 0, 0)
+        .expect("Cannot create black cursor")
 }
 
 fn logout() {
@@ -70,10 +105,8 @@ fn logout() {
 // Generate system-wide mouse scroll events using XTest.
 fn scroll_mouse(display: *mut xlib::Display) {
     unsafe {
-        // Button 4 = scroll up.
         xtest::XTestFakeButtonEvent(display, 4, 1, 0);
         xtest::XTestFakeButtonEvent(display, 4, 0, 0);
-
         xlib::XFlush(display);
     }
 }
@@ -99,32 +132,25 @@ fn move_mouse_smoothly(
             *current_y = (*current_y - STEP).max(target_y);
         }
 
-        mouse.warp_mouse_in_window(
-            window,
-            *current_x,
-            *current_y,
-        );
+        mouse.warp_mouse_in_window(window, *current_x, *current_y);
 
         thread::sleep(Duration::from_millis(10));
     }
 }
 
 fn main() {
-    // Initialize X11 connection.
-    let display = unsafe {
-        xlib::XOpenDisplay(std::ptr::null())
-    };
+    let display = unsafe { xlib::XOpenDisplay(std::ptr::null()) };
 
     if display.is_null() {
         panic!("Cannot connect to X11 display");
     }
 
-    let sdl_context =
-        sdl2::init().expect("SDL initialization failed");
+    // Disable GNOME idle + lock while running (user-level, no sudo).
+    let prev_lock = disable_lock();
+    println!("Screen lock disabled while running.");
 
-    let video = sdl_context
-        .video()
-        .expect("Video initialization failed");
+    let sdl_context = sdl2::init().expect("SDL initialization failed");
+    let video = sdl_context.video().expect("Video initialization failed");
 
     let window = video
         .window("Mouse Mover", 2020, 1180)
@@ -133,37 +159,20 @@ fn main() {
         .build()
         .expect("Window creation failed");
 
-    let canvas = window
-        .into_canvas()
-        .build()
-        .expect("Canvas creation failed");
+    let canvas = window.into_canvas().build().expect("Canvas creation failed");
 
-    let mut event_pump = sdl_context
-        .event_pump()
-        .expect("Event pump creation failed");
+    let mut event_pump =
+        sdl_context.event_pump().expect("Event pump creation failed");
 
     let mouse = sdl_context.mouse();
 
-    // Create and activate the custom black cursor.
     let black_cursor = create_black_cursor();
     black_cursor.set();
 
     let positions = [
-        (100, 100),
-        (200, 200),
-        (300, 300),
-        (400, 400),
-        (500, 500),
-        (600, 600),
-        (700, 700),
-        (800, 800),
-        (900, 900),
-        (1000, 1000),
-        (1100, 1100),
-        (1200, 1200),
-        (1300, 1300),
-        (1400, 1400),
-        (1500, 1500),
+        (100, 100), (200, 200), (300, 300), (400, 400), (500, 500),
+        (600, 600), (700, 700), (800, 800), (900, 900), (1000, 1000),
+        (1100, 1100), (1200, 1200), (1300, 1300), (1400, 1400), (1500, 1500),
     ];
 
     let mut i = 0;
@@ -179,30 +188,24 @@ fn main() {
     println!("Movement: Every 2 seconds");
     println!("Scroll: Down every 500 milliseconds");
     println!("Step: 5 pixels");
-    println!("Maximum runtime: 180 minutes");
+    println!("Maximum runtime: 120 minutes");
     println!("Press Shift + 3 to logout.");
 
     'running: loop {
-        // 180-minute watchdog.
         if start_time.elapsed() >= MAX_RUNTIME {
             println!("Timer expired.");
             break 'running;
         }
 
-        // Handle keyboard and window events.
         for event in event_pump.poll_iter() {
             match event {
-                Event::Quit { .. } => {
-                    break 'running;
-                }
+                Event::Quit { .. } => break 'running,
 
                 Event::KeyDown {
                     keycode: Some(Keycode::Num3),
                     keymod,
                     ..
-                } if keymod.intersects(
-                    Mod::LSHIFTMOD | Mod::RSHIFTMOD
-                ) => {
+                } if keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD) => {
                     println!("Shift + 3 pressed.");
                     break 'running;
                 }
@@ -211,22 +214,15 @@ fn main() {
             }
         }
 
-        // Scroll mouse every 500 milliseconds.
         if last_scroll.elapsed() >= SCROLL_INTERVAL {
             scroll_mouse(display);
             last_scroll = Instant::now();
         }
 
-        // Move mouse every 2 seconds.
         if last_move.elapsed() >= MOVE_INTERVAL {
-            let (target_x, target_y) =
-                positions[i % positions.len()];
+            let (target_x, target_y) = positions[i % positions.len()];
 
-            println!(
-                "Moving mouse to ({}, {})",
-                target_x,
-                target_y
-            );
+            println!("Moving mouse to ({}, {})", target_x, target_y);
 
             move_mouse_smoothly(
                 &mouse,
@@ -244,17 +240,16 @@ fn main() {
         thread::sleep(Duration::from_millis(100));
     }
 
-    // Clean up SDL resources.
     drop(black_cursor);
     drop(canvas);
     drop(event_pump);
     drop(sdl_context);
 
-    // Close X11 connection.
-    unsafe {
-        xlib::XCloseDisplay(display);
-    }
+    // Restore the previous lock settings.
+    restore_lock(&prev_lock);
+    println!("Screen lock restored.");
 
-    // Logout after normal application exit.
+    unsafe { xlib::XCloseDisplay(display); }
+
     logout();
 }
