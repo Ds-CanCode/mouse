@@ -7,8 +7,11 @@ use sdl2::event::Event;
 use sdl2::keyboard::{Keycode, Mod};
 use sdl2::mouse::Cursor;
 
-const MAX_RUNTIME: Duration = Duration::from_secs(180 * 60);
+use x11::{xlib, xtest};
+
+const MAX_RUNTIME: Duration = Duration::from_secs(120 * 60);
 const MOVE_INTERVAL: Duration = Duration::from_secs(2);
+const SCROLL_INTERVAL: Duration = Duration::from_millis(500);
 const STEP: i32 = 5;
 
 // Create a custom 16x16 black arrow cursor.
@@ -64,6 +67,17 @@ fn logout() {
         .status();
 }
 
+// Generate system-wide mouse scroll events using XTest.
+fn scroll_mouse(display: *mut xlib::Display) {
+    unsafe {
+        // Button 4 = scroll up.
+        xtest::XTestFakeButtonEvent(display, 4, 1, 0);
+        xtest::XTestFakeButtonEvent(display, 4, 0, 0);
+
+        xlib::XFlush(display);
+    }
+}
+
 fn move_mouse_smoothly(
     mouse: &sdl2::mouse::MouseUtil,
     window: &sdl2::video::Window,
@@ -96,6 +110,15 @@ fn move_mouse_smoothly(
 }
 
 fn main() {
+    // Initialize X11 connection.
+    let display = unsafe {
+        xlib::XOpenDisplay(std::ptr::null())
+    };
+
+    if display.is_null() {
+        panic!("Cannot connect to X11 display");
+    }
+
     let sdl_context =
         sdl2::init().expect("SDL initialization failed");
 
@@ -149,10 +172,12 @@ fn main() {
 
     let start_time = Instant::now();
     let mut last_move = Instant::now();
+    let mut last_scroll = Instant::now();
 
     println!("Mouse Mover started.");
     println!("Cursor: Black arrow");
-    println!("Movement: Every 15 seconds");
+    println!("Movement: Every 2 seconds");
+    println!("Scroll: Down every 500 milliseconds");
     println!("Step: 5 pixels");
     println!("Maximum runtime: 180 minutes");
     println!("Press Shift + 3 to logout.");
@@ -186,7 +211,13 @@ fn main() {
             }
         }
 
-        // Move mouse every 15 seconds.
+        // Scroll mouse every 500 milliseconds.
+        if last_scroll.elapsed() >= SCROLL_INTERVAL {
+            scroll_mouse(display);
+            last_scroll = Instant::now();
+        }
+
+        // Move mouse every 2 seconds.
         if last_move.elapsed() >= MOVE_INTERVAL {
             let (target_x, target_y) =
                 positions[i % positions.len()];
@@ -218,6 +249,11 @@ fn main() {
     drop(canvas);
     drop(event_pump);
     drop(sdl_context);
+
+    // Close X11 connection.
+    unsafe {
+        xlib::XCloseDisplay(display);
+    }
 
     // Logout after normal application exit.
     logout();
